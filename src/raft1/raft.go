@@ -9,17 +9,23 @@ package raft
 
 
 import (
-	//	"bytes"
+	"bytes"
 	"math/rand"
 	"sync"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	"6.5840/tester1"
 )
+type NodeState int
 
+const (
+	Follower NodeState = iota
+	Leader
+	Candidate
+)
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -31,7 +37,23 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	state NodeState
 
+	currentTerm int
+	votedFor int
+	log []LogEntry
+
+	commitIndex int
+	lastApplied int
+
+	nextIndex []int
+	matchIndex []int
+
+}
+
+type LogEntry struct{
+	term int
+	command interface{}
 }
 
 // return currentTerm and whether this server
@@ -41,6 +63,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	term = rf.currentTerm
+	if rf.state == Leader {
+		isleader = true
+	}
 	return term, isleader
 }
 
@@ -60,6 +86,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
+
 }
 
 
@@ -81,6 +115,23 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var term int
+	var votedFor int
+	var log []LogEntry
+
+	if d.Decode(&term) != nil || 
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		return
+	} else {
+		rf.currentTerm = term
+		rf.votedFor = votedFor
+		rf.log = log
+	}
+
 }
 
 // how many bytes in Raft's persisted log?
@@ -105,17 +156,54 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	Term int
+	CandidateId int
+	LastLogIndex int
+	LastLogTerm int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	Term int
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.state = Follower
+	}
+
+	lastLogIndex := 0
+    lastLogTerm := 0
+
+    if len(rf.log) > 0 {
+        lastLogIndex = len(rf.log) - 1
+        lastLogTerm = rf.log[lastLogIndex].term
+    }
+
+	logOk := args.LastLogTerm > lastLogTerm ||
+		(args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
+
+	if (rf.votedFor == -1 || 
+		rf.votedFor == args.CandidateId) &&
+		args.LastLogIndex >= lastLogIndex &&
+		logOk {
+			rf.currentTerm = args.Term
+			rf.votedFor = args.CandidateId
+			reply.Term = args.Term
+			reply.VoteGranted = true
+	}
+
 }
 
 // example code to send a RequestVote RPC to a server.
