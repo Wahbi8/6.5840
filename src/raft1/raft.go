@@ -253,11 +253,20 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
+	// Your code here (3B).	
+	mu.Lock()
+	defer mu.Unlock()
 
-	// Your code here (3B).
+	if rf.state != Leader {
+		return index, term, isLeader 
+	}
 
+	index = len(rf.log) - 1
+	term = rf.currentTerm
+	isLeader = true
 
+	rf.log = append(rf.log, LogEntry{term = term, command = command})
 	return index, term, isLeader
 }
 
