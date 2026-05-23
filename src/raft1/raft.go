@@ -49,6 +49,7 @@ type Raft struct {
 	nextIndex []int
 	matchIndex []int
 
+	lastHeartbeat time.Time
 }
 
 type LogEntry struct{
@@ -63,6 +64,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	mu.Lock()
+	defer mu.Unlock()
+
 	term = rf.currentTerm
 	if rf.state == Leader {
 		isleader = true
@@ -151,6 +155,19 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+type AppendEntriesArgs struct{
+    Term int
+    LeaderId int
+    PrevLogIndex int
+    PrevLogTerm int
+    Entries []LogEntry
+    LeaderCommit int
+}
+
+type AppendEntriesReply struct{
+    Term int
+    Success bool
+}
 
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -173,6 +190,9 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	mu.Lock()
+	defer mu.Unlock()
+
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
@@ -181,6 +201,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		rf.state = Follower
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
 	}
 
 	lastLogIndex := 0
@@ -196,7 +218,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if (rf.votedFor == -1 || 
 		rf.votedFor == args.CandidateId) &&
-		args.LastLogIndex >= lastLogIndex &&
 		logOk {
 			rf.currentTerm = args.Term
 			rf.votedFor = args.CandidateId
@@ -204,7 +225,57 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 	}
 
+	rf.presist()
 }
+
+
+func (rf *RaftNode) AppendEntries(args AppendEntriesArgs, reply AppendEntriesReply) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+        reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+    }
+
+    if args.Term > rf.currentTerm {
+        rf.currentTerm = args.Term
+        rf.state = Follower
+        rf.votedFor = -1
+    }
+
+    if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+        reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+    }
+
+    // Rule 3 from paper
+    for i, entry := range args.Entries {
+        logIndex := args.PrevLogIndex + 1 + i
+        if logIndex < len(rf.log) && rf.log[logIndex].Term != entry.Term {
+            rf.log = rf.log[:logIndex] // delete from conflict point onwards
+            break
+        }
+    }
+
+    // Rule 4 form paper
+    for i, entry := range args.Entries {
+        logIndex := args.PrevLogIndex + 1 + i
+        if logIndex >= len(rf.log) {
+            rf.log = append(rf.log, entry)
+        }
+    }
+
+    // Rule 5 — update commitIndex
+    if args.LeaderCommit > rf.commitIndex {
+        rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+    }
+
+    rf.presist()
+}
+
 
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
@@ -238,6 +309,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -267,6 +343,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = true
 
 	rf.log = append(rf.log, LogEntry{term = term, command = command})
+	rf.presist()
 	return index, term, isLeader
 }
 
@@ -276,11 +353,14 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		rf.mu.Lock()
+        
+        rf.mu.Unlock()
 	}
 }
 
