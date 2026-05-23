@@ -49,7 +49,9 @@ type Raft struct {
 	nextIndex []int
 	matchIndex []int
 
-	lastHeartbeat time.Time
+	nextHeartbeat time.Time
+	killTicker bool //set to true if state = Leader
+	// requestVoteReplySlice []RequestVoteReply{}
 }
 
 type LogEntry struct{
@@ -64,12 +66,13 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
-	mu.Lock()
-	defer mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	term = rf.currentTerm
 	if rf.state == Leader {
 		isleader = true
+		killTicker = true
 	}
 	return term, isleader
 }
@@ -190,8 +193,8 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
-	mu.Lock()
-	defer mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
@@ -230,8 +233,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 
 func (rf *RaftNode) AppendEntries(args AppendEntriesArgs, reply AppendEntriesReply) {
-	mu.Lock()
-	defer mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if args.Term < rf.currentTerm {
         reply.Term = rf.currentTerm
@@ -331,8 +334,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := false
 	// Your code here (3B).	
-	mu.Lock()
-	defer mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if rf.state != Leader {
 		return index, term, isLeader 
@@ -348,19 +351,49 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) ticker() {
-	for true {
+	for !rf.killTicker {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-
+		rf.Lock()
+		if rf.state != Leader && time.Now().After(rf.nextHeartbeat) {
+			rf.startElectoin()
+		}
+		rf.Unlock()
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+}
 
-		rf.mu.Lock()
-        
-        rf.mu.Unlock()
+func (rf *raft) startELection() {
+	rf.mu.Lock()
+	rf.currentTerm ++
+	rf.votedFor = rf.me
+
+	logNum := len(rf.log) - 1
+
+	arg := RequestVoteArgs{
+		Term: rf.currentTerm,
+		CandidateId: rf.me,
+		LastLogIndex: logNum,
+		LastLogTerm: rf.log[logNum].Term , 
+	}
+	rf.mu.Unlock()
+
+	peerNum := 5 // number of nodes
+	for num := 0; num < peerNum; num++ { 
+		if num != rf.me {
+			go func(peer int) {
+				reply := RequestVoteReply{}
+				rf.sendRequestVote(peer, &arg, &reply)
+
+				rf.mu.Lock()
+				// check term, count vote, maybe transition to leader
+				rf.mu.Unlock()
+			}(num)
+		}
 	}
 }
 
