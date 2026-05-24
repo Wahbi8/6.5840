@@ -72,7 +72,7 @@ func (rf *Raft) GetState() (int, bool) {
 	term = rf.currentTerm
 	if rf.state == Leader {
 		isleader = true
-		killTicker = true
+		rf.killTicker = true
 	}
 	return term, isleader
 }
@@ -228,11 +228,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 	}
 
-	rf.presist()
+	rf.persist()
 }
 
 
-func (rf *RaftNode) AppendEntries(args AppendEntriesArgs, reply AppendEntriesReply) {
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -276,7 +276,7 @@ func (rf *RaftNode) AppendEntries(args AppendEntriesArgs, reply AppendEntriesRep
         rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
     }
 
-    rf.presist()
+    rf.persist()
 }
 
 
@@ -346,7 +346,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = true
 
 	rf.log = append(rf.log, LogEntry{term = term, command = command})
-	rf.presist()
+	rf.persist()
 	return index, term, isLeader
 }
 
@@ -357,7 +357,7 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		rf.Lock()
 		if rf.state != Leader && time.Now().After(rf.nextHeartbeat) {
-			rf.startElectoin()
+			rf.startElection()
 		}
 		rf.Unlock()
 		// pause for a random amount of time between 50 and 350
@@ -369,6 +369,7 @@ func (rf *Raft) ticker() {
 
 func (rf *raft) startELection() {
 	rf.mu.Lock()
+	rf.state = Candidate
 	rf.currentTerm ++
 	rf.votedFor = rf.me
 
@@ -382,7 +383,9 @@ func (rf *raft) startELection() {
 	}
 	rf.mu.Unlock()
 
-	peerNum := 5 // number of nodes
+	peerNum := 5 // number of nodes 5
+	voteCh := make(chan bool, peerNum)
+	voteCh <- true
 	for num := 0; num < peerNum; num++ { 
 		if num != rf.me {
 			go func(peer int) {
@@ -390,10 +393,33 @@ func (rf *raft) startELection() {
 				rf.sendRequestVote(peer, &arg, &reply)
 
 				rf.mu.Lock()
-				// check term, count vote, maybe transition to leader
+				if reply.Term > rf.currentTerm {
+					rf.state = Follower
+					rf.votedFor = -1
+					rf.currentTerm = reply.Term
+					rf.persist()
+					voteCh <- reply.Success
+
+					rf.mu.Unlock()
+					return
+				}
+				voteCh <- reply.Success
 				rf.mu.Unlock()
 			}(num)
 		}
+	}
+	vote := 0
+	for n := 0; n < peerNum; n++ {
+		if <- voteCh {
+			vote++
+		}
+	}
+
+	if vote > peerNum/2 {
+		rf.mu.Lock()
+		rf.state = Leader
+		rf.mu.Unlock()
+		return
 	}
 }
 
