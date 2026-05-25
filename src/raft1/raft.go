@@ -352,14 +352,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) ticker() {
 	for !rf.killTicker {
-
+		rf.mu.Lock()
+		state := rf.state
+		rf.mu.Unlock()
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		rf.Lock()
-		if rf.state != Leader && time.Now().After(rf.nextHeartbeat) {
+		switch state {
+		case Follower, Candidate:
+			if time.Now().After(rf.nextHeartbeat) {
 			rf.startElection()
+			}
+		case Leader:
+
 		}
-		rf.Unlock()
+		
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
@@ -384,8 +390,8 @@ func (rf *raft) startELection() {
 	rf.mu.Unlock()
 
 	peerNum := 5 // number of nodes 5
-	voteCh := make(chan bool, peerNum)
-	voteCh <- true
+	// voteCh := make(chan bool, peerNum)
+	// voteCh <- true
 	for num := 0; num < peerNum; num++ { 
 		if num != rf.me {
 			go func(peer int) {
@@ -398,28 +404,22 @@ func (rf *raft) startELection() {
 					rf.votedFor = -1
 					rf.currentTerm = reply.Term
 					rf.persist()
-					voteCh <- reply.Success
 
 					rf.mu.Unlock()
 					return
 				}
-				voteCh <- reply.Success
+				
+				if reply.VoteGranted {
+					voteCount++
+					if voteCount > len(rf.peers)/2 && rf.state == Candidate {
+						rf.state = Leader
+						// i need to make sure to not call the function while the struct is locked
+						rf.sendHeartbeats() //function to be added
+					}
+				}
 				rf.mu.Unlock()
 			}(num)
 		}
-	}
-	vote := 0
-	for n := 0; n < peerNum; n++ {
-		if <- voteCh {
-			vote++
-		}
-	}
-
-	if vote > peerNum/2 {
-		rf.mu.Lock()
-		rf.state = Leader
-		rf.mu.Unlock()
-		return
 	}
 }
 
