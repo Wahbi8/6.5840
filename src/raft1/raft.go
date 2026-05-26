@@ -354,22 +354,32 @@ func (rf *Raft) ticker() {
 	for !rf.killTicker {
 		rf.mu.Lock()
 		state := rf.state
+		nextHeartbeat := rf.nextHeartbeat
+		log := rf.log
 		rf.mu.Unlock()
 		// Your code here (3A)
 		// Check if a leader election should be started.
 		switch state {
 		case Follower, Candidate:
-			if time.Now().After(rf.nextHeartbeat) {
+			if time.Now().After(nextHeartbeat) {
 			rf.startElection()
 			}
+			ms := 50 + (rand.Int63() % 300)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
 		case Leader:
+			//if received log
+			//update nextHerrtbeat
 
+			if time.Now().After(nextHeartbeat) {
+				rf.sendHeartbeats()
+			}
+
+			ms := 150
+			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 		
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
 
@@ -389,7 +399,7 @@ func (rf *raft) startELection() {
 	}
 	rf.mu.Unlock()
 
-	peerNum := 5 // number of nodes 5
+	peerNum := 5 // number of nodes 5 
 	// voteCh := make(chan bool, peerNum)
 	// voteCh <- true
 	for num := 0; num < peerNum; num++ { 
@@ -419,6 +429,44 @@ func (rf *raft) startELection() {
 				}
 				rf.mu.Unlock()
 			}(num)
+		}
+	}
+}
+
+func (rf *raft) sendHeartbeats(){
+	rf.mu.Lock()
+	args := AppendEntriesArgs{
+		Term : rf.currentTerm,
+		LeaderId: rf.me,
+		PrevLogIndex: len(rf.log) - 1,
+		PrevLogTerm: rf.log[len(rf.log) - 1].Term
+		Entries: []Entries{},
+		LeaderCommit: rf.commitIndex,
+	}
+	rf.mu.Unlock()
+
+	peerNum := 5
+
+	for num := 0; num < peerNum; num++ {
+		if num != rf.me{
+			go func(peer int){
+				reply := AppendEntriesReply{}
+				rf.sendAppendEntries(peer, &args, &reply)
+
+				rf.mu.Lock()
+				if reply.Term > rf.currentTerm {
+					rf.state = Follower
+					rf.votedFor = -1
+					rf.currentTerm = reply.Term
+					rf.persist()
+
+					rf.mu.Unlock()
+					return
+				}
+
+				//add the logic for if reply term less then len(rf.log) - 1
+			}(num)
+
 		}
 	}
 }
