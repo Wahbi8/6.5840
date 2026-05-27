@@ -206,8 +206,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = Follower
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.persist()
 	}
 
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+	
 	lastLogIndex := 0
     lastLogTerm := 0
 
@@ -226,9 +230,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = args.CandidateId
 			reply.Term = args.Term
 			reply.VoteGranted = true
+			
+			rf.persist()
 	}
 
-	rf.persist()
 }
 
 
@@ -246,6 +251,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         rf.currentTerm = args.Term
         rf.state = Follower
         rf.votedFor = -1
+	
+		rf.persist()
     }
 
     if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -259,7 +266,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         logIndex := args.PrevLogIndex + 1 + i
         if logIndex < len(rf.log) && rf.log[logIndex].Term != entry.Term {
             rf.log = rf.log[:logIndex] // delete from conflict point onwards
-            break
+			break
         }
     }
 
@@ -268,15 +275,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         logIndex := args.PrevLogIndex + 1 + i
         if logIndex >= len(rf.log) {
             rf.log = append(rf.log, entry)
-        }
+		}
     }
 
     // Rule 5 — update commitIndex
     if args.LeaderCommit > rf.commitIndex {
         rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
     }
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	rf.persist()
 
-    rf.persist()
 }
 
 
@@ -464,7 +473,12 @@ func (rf *raft) sendHeartbeats(){
 					return
 				}
 
-				//add the logic for if reply term less then len(rf.log) - 1
+				//add the logic for if reply log intex is less then len(rf.log) - 1
+				if rf.nextIndex[peer] < len(rf.log) - 1{
+					//i need to make sure unblock blocked field if needed
+					// i need to prepare parameters
+					rf.sendAppendEntries()
+				}
 			}(num)
 
 		}
