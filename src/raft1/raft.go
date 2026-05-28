@@ -460,7 +460,10 @@ func (rf *raft) sendHeartbeats(){
 		if num != rf.me{
 			go func(peer int){
 				reply := AppendEntriesReply{}
-				rf.sendAppendEntries(peer, &args, &reply)
+				ok := rf.sendAppendEntries(peer, &args, &reply)
+				if !ok {
+					return
+				}
 
 				rf.mu.Lock()
 				if reply.Term > rf.currentTerm {
@@ -477,7 +480,7 @@ func (rf *raft) sendHeartbeats(){
 				if rf.nextIndex[peer] < len(rf.log) - 1{
 					//i need to make sure unblock blocked field if needed
 					// i need to prepare parameters
-					rf.sendAppendEntries()
+					rf.sendAppendEntriesToPeer(peer)
 				}
 			}(num)
 
@@ -485,6 +488,9 @@ func (rf *raft) sendHeartbeats(){
 	}
 }
 
+func (rf *Raft) sendAppendEntriesToPeer(peer int){
+
+}
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
