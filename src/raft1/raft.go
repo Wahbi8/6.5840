@@ -371,32 +371,35 @@ func (rf *Raft) ticker() {
 		switch state {
 		case Follower, Candidate:
 			if time.Now().After(nextHeartbeat) {
-			rf.startElection()
+				rf.startElection()
 			}
-			ms := 50 + (rand.Int63() % 300)
-			time.Sleep(time.Duration(ms) * time.Millisecond)
 		case Leader:
 			//if received log
 			//update nextHerrtbeat
 
 			if time.Now().After(nextHeartbeat) {
 				rf.sendHeartbeats()
+				
+				rf.mu.Lock()
+				rf.nextHeartbeat = time.Now().Add(100 * time.Millisecond)
+				rf.mu.Unlock()
 			}
 
-			ms := 150
-			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 		
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func (rf *raft) startELection() {
+func (rf *Raft) startELection() {
 	rf.mu.Lock()
 	rf.state = Candidate
 	rf.currentTerm ++
 	rf.votedFor = rf.me
+	ms := 300 + (rand.Int63() % 200) 
+	rf.nextHeartbeat = time.Now().Add(time.Duration(ms) * time.Millisecond)
 
 	logNum := len(rf.log) - 1
 
@@ -407,8 +410,8 @@ func (rf *raft) startELection() {
 		LastLogTerm: rf.log[logNum].Term , 
 	}
 	rf.mu.Unlock()
-
 	peerNum := 5 // number of nodes 5 
+	voteCount := 1
 	// voteCh := make(chan bool, peerNum)
 	// voteCh <- true
 	for num := 0; num < peerNum; num++ { 
@@ -442,13 +445,13 @@ func (rf *raft) startELection() {
 	}
 }
 
-func (rf *raft) sendHeartbeats(){
+func (rf *Raft) sendHeartbeats(){
 	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term : rf.currentTerm,
 		LeaderId: rf.me,
 		PrevLogIndex: len(rf.log) - 1,
-		PrevLogTerm: rf.log[len(rf.log) - 1].Term
+		PrevLogTerm: rf.log[len(rf.log) - 1].Term,
 		Entries: []Entries{},
 		LeaderCommit: rf.commitIndex,
 	}
@@ -489,6 +492,60 @@ func (rf *raft) sendHeartbeats(){
 }
 
 func (rf *Raft) sendAppendEntriesToPeer(peer int){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if peer == rf.me {
+		return
+	}
+
+	prevIndex := rf.nextIndex[peer] - 1
+	args := AppendEntriesArgs{
+		Term: rf.currentTerm,
+		LeaderId: rf.me,
+		PrevLogIndex: prevIndex,
+		PrevLogTerm: rf.log[prevIndex].Term,
+		Entries: rf.log[rf.nextIndex[peer]:],
+		LeaderCommit: rf.commitIndex,
+	}
+	reply := AppendEntriesReply{}
+
+	rf.mu.Unlock()
+	for {
+		ok := rf.sendAppendEntries(peer, &args, &reply)
+		if !ok {
+			rf.mu.Lock()
+			return
+		}
+		rf.mu.Lock()
+
+		if rf.state != Leader || rf.currentTerm != args.Term {
+			return
+		}
+		if reply.Term > rf.currentTerm {
+			rf.state = Follower
+			rf.votedFor = -1
+			rf.currentTerm = reply.Term
+			rf.persist()
+			return
+		}
+		if reply.Success {
+			rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+			rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+			return
+		}
+		// failed: decrement, rebuild args, retry
+		rf.nextIndex[peer]--
+		if rf.nextIndex[peer] == 0 {
+			return
+		}
+		prevIndex = rf.nextIndex[peer] - 1
+		args.PrevLogIndex = prevIndex
+		args.PrevLogTerm = rf.log[prevIndex].Term
+		args.Entries = append([]LogEntry{}, rf.log[rf.nextIndex[peer]:]...)
+		reply = AppendEntriesReply{}
+		rf.mu.Unlock()
+	}
 
 }
 // the service or tester wants to create a Raft server. the ports
