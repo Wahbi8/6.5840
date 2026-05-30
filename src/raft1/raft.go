@@ -72,7 +72,7 @@ func (rf *Raft) GetState() (int, bool) {
 	term = rf.currentTerm
 	if rf.state == Leader {
 		isleader = true
-		rf.killTicker = true
+		// rf.killTicker = true
 	}
 	return term, isleader
 }
@@ -255,6 +255,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
     }
 
+	if args.Term == rf.currentTerm && rf.state == Follower {
+		rf.currentTerm = args.Term
+        rf.state = Follower
+        rf.votedFor = -1
+	
+		rf.persist()
+	}
+
     if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
         reply.Term = rf.currentTerm
 		reply.Success = false
@@ -344,18 +352,27 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := false
 	// Your code here (3B).	
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// defer rf.mu.Unlock()
+	peerNum := 5		//rf.peer 
 
 	if rf.state != Leader {
 		return index, term, isLeader 
 	}
 
+	rf.log = append(rf.log, LogEntry{term = term, command = command})
 	index = len(rf.log) - 1
 	term = rf.currentTerm
 	isLeader = true
-
-	rf.log = append(rf.log, LogEntry{term = term, command = command})
 	rf.persist()
+	rf.mu.Unlock()
+	
+	for num := 0; num < peerNum; num++ {
+		go func(num int) {
+			rf.sendAppendEntriesToPeer(num)
+		}(num)
+	}
+	rf.nextHeartbeat = time.Now().Add(100 * time.Millisecond)
+
 	return index, term, isLeader
 }
 
@@ -401,6 +418,8 @@ func (rf *Raft) startELection() {
 	ms := 300 + (rand.Int63() % 200) 
 	rf.nextHeartbeat = time.Now().Add(time.Duration(ms) * time.Millisecond)
 
+	peerNum := 5		//rf.peer
+
 	logNum := len(rf.log) - 1
 
 	arg := RequestVoteArgs{
@@ -410,7 +429,6 @@ func (rf *Raft) startELection() {
 		LastLogTerm: rf.log[logNum].Term , 
 	}
 	rf.mu.Unlock()
-	peerNum := 5 // number of nodes 5 
 	voteCount := 1
 	// voteCh := make(chan bool, peerNum)
 	// voteCh <- true
@@ -433,10 +451,12 @@ func (rf *Raft) startELection() {
 				
 				if reply.VoteGranted {
 					voteCount++
-					if voteCount > len(rf.peers)/2 && rf.state == Candidate {
-						rf.state = Leader
-						// i need to make sure to not call the function while the struct is locked
-						rf.sendHeartbeats() //function to be added
+					if voteCount > len(rf.peers)/2 && 
+						rf.state == Candidate && 
+						rf.currentTerm == args.Term {
+							rf.state = Leader
+							// i need to make sure to not call the function while the struct is locked
+							rf.sendHeartbeats() //function to be added
 					}
 				}
 				rf.mu.Unlock()
@@ -452,12 +472,12 @@ func (rf *Raft) sendHeartbeats(){
 		LeaderId: rf.me,
 		PrevLogIndex: len(rf.log) - 1,
 		PrevLogTerm: rf.log[len(rf.log) - 1].Term,
-		Entries: []Entries{},
+		Entries: []LogEntry{},
 		LeaderCommit: rf.commitIndex,
 	}
+	peerNum := 5		//rf.peer
 	rf.mu.Unlock()
 
-	peerNum := 5
 
 	for num := 0; num < peerNum; num++ {
 		if num != rf.me{
@@ -483,7 +503,10 @@ func (rf *Raft) sendHeartbeats(){
 				if rf.nextIndex[peer] < len(rf.log) - 1{
 					//i need to make sure unblock blocked field if needed
 					// i need to prepare parameters
+					rf.mu.Unlock()
 					rf.sendAppendEntriesToPeer(peer)
+				} else {
+					rf.mu.Unlock()
 				}
 			}(num)
 
