@@ -55,8 +55,8 @@ type Raft struct {
 }
 
 type LogEntry struct{
-	term int
-	command interface{}
+	Term int
+	Command interface{}
 }
 
 // return currentTerm and whether this server
@@ -217,7 +217,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
     if len(rf.log) > 0 {
         lastLogIndex = len(rf.log) - 1
-        lastLogTerm = rf.log[lastLogIndex].term
+        lastLogTerm = rf.log[lastLogIndex].Term
     }
 
 	logOk := args.LastLogTerm > lastLogTerm ||
@@ -353,17 +353,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (3B).	
 	rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	peerNum := 5		//rf.peer 
+	peerNum := len(rf.peers)		//rf.peer 
 
 	if rf.state != Leader {
 		return index, term, isLeader 
 	}
 
-	rf.log = append(rf.log, LogEntry{term = term, command = command})
+	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
 	index = len(rf.log) - 1
 	term = rf.currentTerm
 	isLeader = true
 	rf.persist()
+	rf.lastApplied = len(rf.log) - 1
 	rf.mu.Unlock()
 	
 	for num := 0; num < peerNum; num++ {
@@ -381,7 +382,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		state := rf.state
 		nextHeartbeat := rf.nextHeartbeat
-		log := rf.log
+		// log := rf.log
 		rf.mu.Unlock()
 		// Your code here (3A)
 		// Check if a leader election should be started.
@@ -410,7 +411,7 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) startELection() {
+func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	rf.state = Candidate
 	rf.currentTerm ++
@@ -418,7 +419,7 @@ func (rf *Raft) startELection() {
 	ms := 300 + (rand.Int63() % 200) 
 	rf.nextHeartbeat = time.Now().Add(time.Duration(ms) * time.Millisecond)
 
-	peerNum := 5		//rf.peer
+	peerNum := len(rf.peers)		//rf.peer
 
 	logNum := len(rf.log) - 1
 
@@ -453,10 +454,11 @@ func (rf *Raft) startELection() {
 					voteCount++
 					if voteCount > len(rf.peers)/2 && 
 						rf.state == Candidate && 
-						rf.currentTerm == args.Term {
+						rf.currentTerm == arg.Term {
 							rf.state = Leader
-							// i need to make sure to not call the function while the struct is locked
+							rf.mu.Unlock()
 							rf.sendHeartbeats() //function to be added
+							rf.mu.Lock()
 					}
 				}
 				rf.mu.Unlock()
@@ -475,7 +477,7 @@ func (rf *Raft) sendHeartbeats(){
 		Entries: []LogEntry{},
 		LeaderCommit: rf.commitIndex,
 	}
-	peerNum := 5		//rf.peer
+	peerNum := len(rf.peers)		//rf.peer
 	rf.mu.Unlock()
 
 
@@ -521,7 +523,9 @@ func (rf *Raft) sendAppendEntriesToPeer(peer int){
 	if peer == rf.me {
 		return
 	}
-
+	
+	committedIndex := 1	
+	peerNum := len(rf.peers)
 	prevIndex := rf.nextIndex[peer] - 1
 	args := AppendEntriesArgs{
 		Term: rf.currentTerm,
@@ -555,9 +559,10 @@ func (rf *Raft) sendAppendEntriesToPeer(peer int){
 		if reply.Success {
 			rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
 			rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+			committedIndex++
 			return
 		}
-		// failed: decrement, rebuild args, retry
+		
 		rf.nextIndex[peer]--
 		if rf.nextIndex[peer] == 0 {
 			return
@@ -569,7 +574,9 @@ func (rf *Raft) sendAppendEntriesToPeer(peer int){
 		reply = AppendEntriesReply{}
 		rf.mu.Unlock()
 	}
-
+	if committedIndex > peerNum/2 {
+		rf.commitIndex = len(rf.log) - 1
+	}
 }
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
